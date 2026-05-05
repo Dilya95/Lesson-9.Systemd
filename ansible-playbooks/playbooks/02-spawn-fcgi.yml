@@ -1,0 +1,65 @@
+- name: Task 2 - Spawn-fcgi service
+  hosts: 194.55.235.221
+  become: yes
+  
+  vars:
+    fcgi_socket: "/var/run/php-fcgi.sock"
+  
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - spawn-fcgi
+          - php-cgi
+        state: present
+        update_cache: yes
+    
+    - name: Create spawn-fcgi config
+      copy:
+        dest: /etc/spawn-fcgi/fcgi.conf
+        content: |
+          SOCKET={{ fcgi_socket }}
+          OPTIONS="-u www-data -g www-data -s {{ fcgi_socket }} -S -M 0600 -C 32 -F 1 -- /usr/bin/php-cgi"
+        mode: '0644'
+    
+    - name: Create systemd service unit
+      copy:
+        dest: /etc/systemd/system/spawn-fcgi.service
+        content: |
+          [Unit]
+          Description=Spawn-fcgi startup service by Otus
+          After=network.target
+          
+          [Service]
+          Type=simple
+          PIDFile=/var/run/spawn-fcgi.pid
+          EnvironmentFile=/etc/spawn-fcgi/fcgi.conf
+          ExecStart=/usr/bin/spawn-fcgi -n $OPTIONS
+          KillMode=process
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+    
+    - name: Start and enable spawn-fcgi
+      systemd:
+        name: spawn-fcgi
+        state: started
+        enabled: yes
+        daemon_reload: yes
+    
+    - name: Verify service is running
+      command: systemctl is-active spawn-fcgi
+      register: service_status
+      changed_when: false
+    
+    - name: Check socket exists
+      stat:
+        path: "{{ fcgi_socket }}"
+      register: socket_stat
+    
+    - name: Show results
+      debug:
+        msg:
+          - "Service: {{ service_status.stdout }}"
+          - "Socket: {{ fcgi_socket }} (exists: {{ socket_stat.stat.exists }})"
