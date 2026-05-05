@@ -1,0 +1,107 @@
+- name: Task 1 - Watchlog service with timer every 30 seconds
+  hosts: all
+  become: yes
+  
+  vars:
+    word: "ALERT"
+    log_file: "/var/log/watchlog.log"
+    script_path: "/opt/watchlog.sh"
+  
+  tasks:
+    - name: Create log file with test entries
+      copy:
+        content: |
+          INFO: System started
+          ALERT: High CPU usage
+          DEBUG: Processing request
+          ALERT: Memory limit exceeded
+          INFO: Normal operation
+        dest: "{{ log_file }}"
+        mode: '0644'
+    
+    - name: Create default config file
+      copy:
+        content: |
+          # Configuration for watchlog service
+          WORD="{{ word }}"
+          LOG="{{ log_file }}"
+        dest: /etc/default/watchlog
+        mode: '0644'
+    
+    - name: Deploy watchlog script
+      copy:
+        content: |
+          #!/bin/bash
+          WORD="$1"
+          LOG="$2"
+          DATE=$(date)
+          
+          if grep -q "$WORD" "$LOG"; then
+              logger "$DATE: I found word, Master!"
+          else
+              exit 0
+          fi
+        dest: "{{ script_path }}"
+        mode: '0755'
+    
+    - name: Create systemd service file
+      copy:
+        content: |
+          [Unit]
+          Description=My watchlog service
+          
+          [Service]
+          Type=oneshot
+          EnvironmentFile=/etc/default/watchlog
+          ExecStart={{ script_path }} $WORD $LOG
+        dest: /etc/systemd/system/watchlog.service
+        mode: '0644'
+    
+    - name: Create systemd timer file
+      copy:
+        content: |
+          [Unit]
+          Description=Run watchlog script every 30 second
+          
+          [Timer]
+          OnBootSec=30
+          OnUnitActiveSec=30
+          Unit=watchlog.service
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/watchlog.timer
+        mode: '0644'
+    
+    - name: Reload systemd daemon
+      command: systemctl daemon-reload
+    
+    - name: Enable and start timer
+      systemd:
+        name: watchlog.timer
+        state: started
+        enabled: yes
+    
+    - name: Verify timer is active
+      command: systemctl is-active watchlog.timer
+      register: timer_active
+      changed_when: false
+    
+    - name: Show timer status
+      debug:
+        msg: "Timer status: {{ timer_active.stdout }}"
+    
+    - name: Wait 35 seconds for timer to trigger
+      wait_for:
+        timeout: 35
+    
+    - name: Check if word was found in syslog
+      command: grep "found word" /var/log/syslog
+      register: result
+      failed_when: false
+      changed_when: false
+    
+    - name: Display result
+      debug:
+        msg: "SUCCESS! Watchlog found entries: {{ result.stdout_lines | length }} times"
+      when: result.stdout
