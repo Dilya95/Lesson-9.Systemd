@@ -1,0 +1,116 @@
+- name: Task 3 - Nginx multi-instance
+  hosts: 194.55.235.221
+  become: yes
+  
+  vars:
+    instances:
+      - name: first
+        port: 9001
+      - name: second
+        port: 9002
+  
+  tasks:
+    - name: Install nginx
+      apt:
+        name: nginx
+        update_cache: yes
+    
+    - name: Stop default nginx
+      systemd:
+        name: nginx
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+    
+    - name: Create nginx template service
+      copy:
+        dest: /etc/systemd/system/nginx@.service
+        content: |
+          [Unit]
+          Description=Nginx instance %i
+          After=network.target
+          
+          [Service]
+          Type=forking
+          PIDFile=/run/nginx-%i.pid
+          ExecStartPre=/usr/sbin/nginx -t -c /etc/nginx/nginx-%i.conf -q
+          ExecStart=/usr/sbin/nginx -c /etc/nginx/nginx-%i.conf
+          ExecReload=/usr/sbin/nginx -c /etc/nginx/nginx-%i.conf -s reload
+          ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile /run/nginx-%i.pid
+          TimeoutStopSec=5
+          KillMode=mixed
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+    
+    - name: Create nginx configs for instances
+      copy:
+        dest: "/etc/nginx/nginx-{{ item.name }}.conf"
+        content: |
+          user www-data;
+          worker_processes auto;
+          pid /run/nginx-{{ item.name }}.pid;
+          
+          events {
+              worker_connections 768;
+          }
+          
+          http {
+              sendfile on;
+              tcp_nopush on;
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+              
+              server {
+                  listen {{ item.port }};
+                  root /var/www/html;
+                  index index.html;
+                  
+                  location / {
+                      try_files $uri $uri/ =404;
+                  }
+              }
+          }
+        mode: '0644'
+      loop: "{{ instances }}"
+    
+    - name: Validate nginx configurations
+      command: "nginx -t -c /etc/nginx/nginx-{{ item.name }}.conf"
+      loop: "{{ instances }}"
+      register: tests
+      changed_when: false
+    
+    - name: Show validation results
+      debug:
+        msg: "{{ item.stdout }}"
+      loop: "{{ tests.results }}"
+    
+    - name: Start nginx instances
+      systemd:
+        name: "nginx@{{ item.name }}"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      loop: "{{ instances }}"
+    
+    - name: Wait for nginx to start
+      wait_for:
+        port: "{{ item.port }}"
+        timeout: 10
+      loop: "{{ instances }}"
+    
+    - name: Verify nginx instances
+      uri:
+        url: "http://localhost:{{ item.port }}"
+        status_code: 200
+      loop: "{{ instances }}"
+      register: curls
+      
+    - name: Show results
+      debug:
+        msg: |
+          ✅ Nginx instances:
+          {% for result in curls.results %}
+            - {{ result.item.name }}: port {{ result.item.port }} - OK
+          {% endfor %}
